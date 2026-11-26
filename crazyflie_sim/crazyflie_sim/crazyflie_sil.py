@@ -37,6 +37,7 @@ class CrazyflieSIL:
     MODE_LOW_FULLSTATE = 2
     MODE_LOW_POSITION = 3
     MODE_LOW_VELOCITY = 4
+    MODE_LOW_ATTITUDE = 5
 
     def __init__(self, name, initialPosition, controller_name, time_func):
         # Core.
@@ -233,6 +234,38 @@ class CrazyflieSIL:
     #     # TODO: set mode to MODE_IDLE?
     #     pass
 
+    def cmdAttitude(self,roll,pitch,yawRate,thrust):
+
+        self.mode = CrazyflieSIL.MODE_LOW_ATTITUDE
+
+        # Disable position and velocity control
+        self.setpoint.mode.x = firm.modeDisable
+        self.setpoint.mode.y = firm.modeDisable
+        self.setpoint.mode.z = firm.modeDisable
+        
+        # Enable attitude contol
+        self.setpoint.mode.roll = firm.modeAbs
+        self.setpoint.mode.pitch = firm.modeAbs
+        self.setpoint.mode.yaw = firm.modeVelocity
+        self.setpoint.mode.quat = firm.modeDisable
+
+        # Attitude commands [deg]
+        self.setpoint.attitude.roll = roll
+        self.setpoint.attitude.pitch = pitch
+
+        # Angular rate command [deg/s]
+        self.setpoint.attitudeRate.roll = 0.0
+        self.setpoint.attitudeRate.pitch = 0.0
+        self.setpoint.attitudeRate.yaw = yawRate
+
+        # Reset previous acceleration setpoint
+        self.setpoint.acceleration.x = 0.0
+        self.setpoint.acceleration.y = 0.0
+        self.setpoint.acceleration.z = 0.0
+
+        # Legacy thrust command
+        self.setpoint.thrust = thrust
+
     def getSetpoint(self):
         if self.mode == CrazyflieSIL.MODE_HIGH_POLY:
             # See logic in crtp_commander_high_level.c
@@ -314,6 +347,7 @@ class CrazyflieSIL:
         time_in_seconds = self.time_func()
         # ticks is essentially the time in milliseconds as an integer
         tick = int(time_in_seconds * 1000)
+
         if self.controller_name != 'mellinger':
             self.controller(self.control, self.setpoint, self.sensors, self.state, tick)
         else:
@@ -344,19 +378,41 @@ class CrazyflieSIL:
             p = [3.26535711e-01, 3.37495115e+03]
             return np.polyval(p, pwm)
 
-        def pwm_to_force(pwm):
-            # polyfit using data and scripts from https://github.com/IMRCLab/crazyflie-system-id
-            p = [1.71479058e-09,  8.80284482e-05, -2.21152097e-01]
-            force_in_grams = np.polyval(p, pwm)
-            force_in_newton = force_in_grams * 9.81 / 1000.0
-            return np.maximum(force_in_newton, 0)
+        pwm = np.array([
+              self.motors_thrust_pwm.motors.m1,
+              self.motors_thrust_pwm.motors.m2,
+              self.motors_thrust_pwm.motors.m3,
+              self.motors_thrust_pwm.motors.m4], dtype=float)
 
-        return sim_data_types.Action(
-            [pwm_to_rpm(self.motors_thrust_pwm.motors.m1),
-             pwm_to_rpm(self.motors_thrust_pwm.motors.m2),
-             pwm_to_rpm(self.motors_thrust_pwm.motors.m3),
-             pwm_to_rpm(self.motors_thrust_pwm.motors.m4)])
+        # RPM
+        rpm = np.array([ pwm_to_rpm(p) for p in pwm])
 
+        # Motor force (same model as backend/np.py)
+        coeff = [ 2.55077341e-08,-4.92422570e-05,-1.51910248e-01]
+
+        force = np.maximum( np.polyval(coeff,rpm)*9.81/1000.0,0.0)
+
+        # Debug output
+        if self.mode == CrazyflieSIL.MODE_LOW_ATTITUDE:
+
+            if not hasattr(self, '_debug_count'):
+                self._debug_count = 0
+            self._debug_count += 1
+            if self._debug_count % 100 == 0:
+
+               print(
+                   f"PWM_ref={self.setpoint.thrust:.1f},"
+                   f"PWM_control={self.control.thrust:.1f},"
+                   f"PWM={pwm},"
+                   f"PWM_mean={np.mean(pwm):.1f},"
+                   f"F_total={np.sum(force):.6f} N"
+                   f"roll_control={self.control.roll},"
+                   f"pitch_control={self.control.pitch},"
+                   f"yaw_control={self.control.yaw}",
+                   flush=True
+               )
+        return sim_data_types.Action(rpm.tolist())
+        
     @staticmethod
     def _fwsetpoint_to_sim_data_types_state(fwsetpoint):
         pos = np.array([fwsetpoint.position.x, fwsetpoint.position.y, fwsetpoint.position.z])
