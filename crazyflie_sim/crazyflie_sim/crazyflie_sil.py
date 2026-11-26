@@ -93,6 +93,7 @@ class CrazyflieSIL:
         elif controller_name == 'mellinger':
             self.mellinger_control = firm.controllerMellinger_t()
             firm.controllerMellingerInit(self.mellinger_control)
+            self.mellinger_control.kd_omega_rp = 0.0
             self.controller = firm.controllerMellinger
         elif controller_name == 'brescianini':
             firm.controllerBrescianiniInit()
